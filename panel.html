@@ -114,6 +114,29 @@
         </div>
     </div>
 
+    <!-- Context Menu for Encode/Decode -->
+    <div id="context-menu" class="context-menu">
+        <div class="context-menu-item has-submenu">
+            <span>Convert</span>
+            <span class="submenu-arrow">▶</span>
+            <div class="context-submenu">
+                <div class="context-submenu-group">
+                    <div class="context-submenu-header">URL</div>
+                    <div class="context-menu-item" data-action="url-decode">URL Decode</div>
+                    <div class="context-menu-item" data-action="url-encode-key">URL Encode (Key Char)</div>
+                    <div class="context-menu-item" data-action="url-encode-all">URL Encode (All Char)</div>
+                    <div class="context-menu-item" data-action="url-encode-unicode">URL Encode (All Char Unicode)</div>
+                </div>
+                <div class="context-submenu-separator"></div>
+                <div class="context-submenu-group">
+                    <div class="context-submenu-header">Base64</div>
+                    <div class="context-menu-item" data-action="base64-decode">Base64 Decode</div>
+                    <div class="context-menu-item" data-action="base64-encode">Base64 Encode</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="html2canvas.min.js"></script>
     <script src="syntax-highlight.js"></script>
     <script src="panel.js"></script>

@@ -8,6 +8,8 @@ let currentSearchTerm = '';
 let useRegex = false;
 let requestHistory = [];
 let historyIndex = -1;
+let undoStack = [];
+let redoStack = [];
 
 const STAR_ICON_FILLED = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
 const STAR_ICON_OUTLINE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.01 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></svg>';
@@ -27,6 +29,7 @@ const historyFwdBtn = document.getElementById('history-fwd');
 const copyReqBtn = document.getElementById('copy-req-btn');
 const copyResBtn = document.getElementById('copy-res-btn');
 const screenshotBtn = document.getElementById('screenshot-btn');
+const contextMenu = document.getElementById('context-menu');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -56,6 +59,336 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
+// Context Menu Functions
+function setupContextMenu() {
+    // Right-click on editors
+    [rawRequestInput, rawResponseDisplay].forEach(editor => {
+        if (!editor) return;
+        
+        editor.addEventListener('contextmenu', (e) => {
+            const selection = window.getSelection();
+            const selectedText = selection.toString().trim();
+            
+            if (!selectedText) {
+                return; // Don't show menu if no text selected
+            }
+            
+            e.preventDefault();
+            showContextMenu(e.clientX, e.clientY, editor);
+        });
+    });
+
+    // Click outside to close
+    document.addEventListener('click', (e) => {
+        if (!contextMenu.contains(e.target)) {
+            hideContextMenu();
+        }
+    });
+
+    // Handle menu item clicks (only items with data-action, not the parent)
+    contextMenu.addEventListener('click', (e) => {
+        const item = e.target.closest('.context-menu-item[data-action]');
+        if (item) {
+            e.stopPropagation();
+            const action = item.dataset.action;
+            if (action) {
+                handleEncodeDecode(action);
+                hideContextMenu();
+            }
+        }
+    });
+
+    // Keyboard shortcut: Ctrl+E (or Cmd+E on Mac) to show context menu
+    document.addEventListener('keydown', (e) => {
+        const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+        const modKey = isMac ? e.metaKey : e.ctrlKey;
+        
+        if (modKey && e.key === 'e' && !e.shiftKey && !e.altKey) {
+            const activeElement = document.activeElement;
+            if (activeElement === rawRequestInput || activeElement === rawResponseDisplay) {
+                const selection = window.getSelection();
+                const selectedText = selection.toString().trim();
+                
+                if (selectedText) {
+                    e.preventDefault();
+                    const rect = activeElement.getBoundingClientRect();
+                    const range = selection.getRangeAt(0);
+                    const rect2 = range.getBoundingClientRect();
+                    showContextMenu(rect2.right, rect2.top + rect2.height / 2, activeElement);
+                }
+            }
+        }
+    });
+}
+
+function showContextMenu(x, y, targetElement) {
+    contextMenu.dataset.target = targetElement === rawRequestInput ? 'request' : 'response';
+    contextMenu.classList.add('show');
+    contextMenu.style.left = x + 'px';
+    contextMenu.style.top = y + 'px';
+    
+    // Adjust position if menu goes off screen
+    const rect = contextMenu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        contextMenu.style.left = (x - rect.width) + 'px';
+    }
+    if (rect.bottom > window.innerHeight) {
+        contextMenu.style.top = (y - rect.height) + 'px';
+    }
+}
+
+function hideContextMenu() {
+    contextMenu.classList.remove('show');
+}
+
+function handleEncodeDecode(action) {
+    const targetType = contextMenu.dataset.target;
+    const editor = targetType === 'request' ? rawRequestInput : rawResponseDisplay;
+    
+    if (!editor) return;
+    
+    // Get selected text
+    const selection = window.getSelection();
+    if (!selection.rangeCount) return;
+    
+    const range = selection.getRangeAt(0);
+    const selectedText = range.toString();
+    
+    if (!selectedText.trim()) return;
+    
+    // Save undo state BEFORE making any changes (only for request editor)
+    const isRequestEditor = editor === rawRequestInput;
+    if (isRequestEditor) {
+        // Save current state before conversion
+        saveUndoState();
+        // Temporarily disable input event listener to prevent interference
+        if (rawRequestInput.undoTimeout) {
+            clearTimeout(rawRequestInput.undoTimeout);
+        }
+        rawRequestInput._undoDisabled = true;
+    }
+    
+    let transformedText = '';
+    
+    try {
+        switch (action) {
+            case 'base64-encode':
+                transformedText = btoa(unescape(encodeURIComponent(selectedText)));
+                break;
+            case 'base64-decode':
+                transformedText = decodeURIComponent(escape(atob(selectedText)));
+                break;
+            case 'url-decode':
+                transformedText = decodeURIComponent(selectedText);
+                break;
+            case 'url-encode-key':
+                // URL encode only key/reserved characters (like : / ? # [ ] @ ! $ & ' ( ) * + , ; =)
+                // encodeURIComponent already does this, but we can be more explicit
+                transformedText = encodeURIComponent(selectedText);
+                break;
+            case 'url-encode-all':
+                // URL encode ALL characters (even alphanumeric)
+                transformedText = selectedText.split('').map(char => {
+                    return '%' + char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0');
+                }).join('');
+                break;
+            case 'url-encode-unicode':
+                // URL encode all characters, handling unicode properly
+                transformedText = selectedText.split('').map(char => {
+                    const code = char.charCodeAt(0);
+                    if (code > 127) {
+                        // Unicode character - use encodeURIComponent for proper UTF-8 encoding
+                        return encodeURIComponent(char);
+                    } else {
+                        // Regular ASCII - encode all
+                        return '%' + code.toString(16).toUpperCase().padStart(2, '0');
+                    }
+                }).join('');
+                break;
+            default:
+                return;
+        }
+        
+        // Replace selected text
+        if (editor.contentEditable === 'true') {
+            // For contenteditable div
+            range.deleteContents();
+            const textNode = document.createTextNode(transformedText);
+            range.insertNode(textNode);
+            
+            // Update selection
+            range.setStartAfter(textNode);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        } else {
+            // For pre element, we need to update innerHTML/innerText
+            const fullText = editor.textContent;
+            const start = editor.textContent.indexOf(selectedText);
+            if (start !== -1) {
+                const before = fullText.substring(0, start);
+                const after = fullText.substring(start + selectedText.length);
+                editor.textContent = before + transformedText + after;
+            }
+        }
+        
+        // Re-apply syntax highlighting if it's the request editor
+        if (targetType === 'request' && editor === rawRequestInput) {
+            const currentContent = editor.innerText || editor.textContent;
+            editor.innerHTML = highlightHTTP(currentContent);
+            
+            // Save the new state after conversion (re-enable undo tracking)
+            setTimeout(() => {
+                if (isRequestEditor) {
+                    rawRequestInput._undoDisabled = false;
+                    saveUndoState();
+                }
+            }, 0);
+            
+            // Try to restore cursor position after syntax highlighting
+            try {
+                const newSelection = window.getSelection();
+                const newRange = document.createRange();
+                const textNodes = getTextNodesIn(editor);
+                let charCount = 0;
+                let startNode = null;
+                let startOffset = 0;
+                const fullTextBefore = editor.innerText || editor.textContent;
+                const start = fullTextBefore.indexOf(selectedText);
+                const cursorPos = start !== -1 ? start + transformedText.length : 0;
+                
+                for (const node of textNodes) {
+                    const nodeLength = node.textContent.length;
+                    if (charCount + nodeLength >= cursorPos) {
+                        startNode = node;
+                        startOffset = cursorPos - charCount;
+                        break;
+                    }
+                    charCount += nodeLength;
+                }
+                
+                if (startNode) {
+                    newRange.setStart(startNode, Math.min(startOffset, startNode.textContent.length));
+                    newRange.collapse(true);
+                    newSelection.removeAllRanges();
+                    newSelection.addRange(newRange);
+                    editor.focus();
+                }
+            } catch (e) {
+                // If cursor positioning fails, that's okay
+                if (isRequestEditor) {
+                    rawRequestInput._undoDisabled = false;
+                    saveUndoState();
+                }
+            }
+        } else {
+            // For response editor, just re-enable undo if needed
+            if (isRequestEditor) {
+                rawRequestInput._undoDisabled = false;
+            }
+        }
+        
+    } catch (error) {
+        console.error('Encode/decode error:', error);
+        if (isRequestEditor) {
+            rawRequestInput._undoDisabled = false;
+        }
+        alert(`Error: ${error.message}\n\nMake sure the selected text is valid for this operation.\nBase64 decode requires valid base64 encoded text.`);
+    }
+}
+
+// Helper function to get text nodes in an element
+function getTextNodesIn(node) {
+    let textNodes = [];
+    if (node.nodeType === 3) {
+        textNodes.push(node);
+    } else {
+        for (let i = 0; i < node.childNodes.length; i++) {
+            textNodes.push(...getTextNodesIn(node.childNodes[i]));
+        }
+    }
+    return textNodes;
+}
+
+// Undo/Redo Functions
+function setupUndoRedo() {
+    // Track changes in request editor
+    rawRequestInput.addEventListener('input', () => {
+        // Skip if undo is temporarily disabled (during programmatic changes)
+        if (rawRequestInput._undoDisabled) {
+            return;
+        }
+        // Debounce undo state saving
+        clearTimeout(rawRequestInput.undoTimeout);
+        rawRequestInput.undoTimeout = setTimeout(() => {
+            if (!rawRequestInput._undoDisabled) {
+                saveUndoState();
+            }
+        }, 500);
+    });
+    
+    // Handle Ctrl+Z / Cmd+Z for undo
+    rawRequestInput.addEventListener('keydown', (e) => {
+        const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+        const modKey = isMac ? e.metaKey : e.ctrlKey;
+        
+        if (modKey && e.key === 'z' && !e.shiftKey && !e.altKey) {
+            e.preventDefault();
+            undo();
+        } else if (modKey && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+            e.preventDefault();
+            redo();
+        }
+    });
+}
+
+function saveUndoState() {
+    // Skip if undo is temporarily disabled
+    if (rawRequestInput._undoDisabled) {
+        return;
+    }
+    const currentContent = rawRequestInput.innerText || rawRequestInput.textContent;
+    // Don't save if content hasn't changed
+    if (undoStack.length > 0 && undoStack[undoStack.length - 1] === currentContent) {
+        return;
+    }
+    undoStack.push(currentContent);
+    // Limit undo stack size
+    if (undoStack.length > 50) {
+        undoStack.shift();
+    }
+    // Clear redo stack when new change is made
+    redoStack = [];
+}
+
+function undo() {
+    if (undoStack.length <= 1) return; // Keep at least one state
+    
+    // Save current state to redo stack
+    const currentContent = rawRequestInput.innerText || rawRequestInput.textContent;
+    redoStack.push(currentContent);
+    
+    // Remove current state and get previous
+    undoStack.pop(); // Remove current
+    const previousContent = undoStack[undoStack.length - 1];
+    
+    if (previousContent !== undefined) {
+        rawRequestInput.textContent = previousContent;
+        rawRequestInput.innerHTML = highlightHTTP(previousContent);
+    }
+}
+
+function redo() {
+    if (redoStack.length === 0) return;
+    
+    const nextContent = redoStack.pop();
+    if (nextContent !== undefined) {
+        undoStack.push(nextContent);
+        rawRequestInput.textContent = nextContent;
+        rawRequestInput.innerHTML = highlightHTTP(nextContent);
+    }
+}
 
 function waitForHtml2Canvas() {
     // Check if html2canvas is already loaded (check both window.html2canvas and global html2canvas)
@@ -278,6 +611,14 @@ function selectRequest(index) {
     requestHistory = [];
     historyIndex = -1;
     addToHistory(rawText, useHttpsCheckbox.checked);
+    
+    // Initialize Undo/Redo
+    undoStack = [rawText];
+    redoStack = [];
+    
+    // Initialize Undo/Redo
+    undoStack = [rawText];
+    redoStack = [];
 
     // Clear Response
     rawResponseDisplay.textContent = '';
@@ -358,6 +699,12 @@ function setupEventListeners() {
     screenshotBtn.addEventListener('click', async () => {
         await captureScreenshot();
     });
+
+    // Context Menu for Encode/Decode
+    setupContextMenu();
+    
+    // Undo/Redo for request editor
+    setupUndoRedo();
 }
 
 async function copyToClipboard(text, btn) {
