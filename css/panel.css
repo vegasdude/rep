@@ -849,6 +849,28 @@ tr.selected {
     color: #5f6368;
 }
 
+/* Params syntax */
+.param-key {
+    color: #ffcb6b;
+    /* Yellowish */
+}
+
+.param-value {
+    color: #c3e88d;
+    /* Green */
+}
+
+/* Cookie syntax */
+.cookie-key {
+    color: #c792ea;
+    /* Purple */
+}
+
+.cookie-value {
+    color: #f07178;
+    /* Reddish */
+}
+
 
 /* Tabs */
 .tabs {
